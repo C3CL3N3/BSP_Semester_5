@@ -137,7 +137,8 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             env.step([0.5, 1, 0])
         env.step(Action(100, 100, -100))
-        self.assertAlmostEqual(env.state.speed, 0.2)
+        self.assertGreater(env.state.speed, 0)
+        self.assertLessEqual(env.state.speed, 0.2)
         env.step(Action(math.nan, 0, 0))
         with self.assertRaises(RuntimeError):
             env.step(Action(0, 0, 0))

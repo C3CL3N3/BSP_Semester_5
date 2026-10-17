@@ -1,5 +1,22 @@
 # One-day supervisor prototype
 
+## Dynamic tyre update (current branch)
+
+The user authorized the first two dynamics additions, superseding the original
+kinematic-only scope below. Current model is dynamic: front/rear slip angles,
+saturated linear lateral axle forces, static normal loads and a per-axle
+friction circle. Lateral demand reduces available acceleration/braking.
+Mass and yaw inertia now affect motion; lateral velocity and yaw rate are
+integrated. Internal timestep 0.001 s, environment timestep unchanged.
+Config defaults and assumptions are documented in README.md. Old settings
+without a model key retain the kinematic model. No aero or load transfer added.
+
+Validation: 52 tests pass. Same initial seed/population: 1/30 three-lap
+completions in each model. Baseline 12 m/s: 113.94 s kinematic, 114.52 s dynamic.
+At 22 and 26 m/s targets the kinematic baseline completes; dynamic baseline goes
+off-track before its first lap. Evidence is in
+`outputs/physics-comparison-20261017T103853822623Z/`.
+
 ## Current objective update
 
 The user changed the objective to three laps plus a reward for lower mean lap

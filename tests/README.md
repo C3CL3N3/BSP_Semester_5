@@ -18,3 +18,8 @@ reproducibility, champion reconstruction, output mapping and budget expiry.
 `test_replay.py` verifies baseline/champion loading, input validation, timestamp
 and heading interpolation, PNG export and SDL dummy-display animation.
 Replay tests require pygame-ce.
+
+`test_dynamic_vehicle.py` verifies axle slip/load conventions, friction circles,
+reduced longitudinal force under cornering load, transient steering symmetry,
+stationary steering/braking, lateral-force direction, deterministic integration
+and timestep convergence. Legacy kinematic checks remain in test_vehicle.py.

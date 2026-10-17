@@ -40,6 +40,9 @@ class Replay:
         result = dict(a)
         for key in ("x", "y", "speed", "steering_angle", "maximum_validated_progress"):
             result[key] = a[key] + fraction * (b[key] - a[key])
+        for key in ("lateral_speed", "yaw_rate"):
+            if key in a and key in b:
+                result[key] = a[key] + fraction * (b[key] - a[key])
         result["heading"] = wrap_to_pi(a["heading"] + fraction * wrap_to_pi(b["heading"] - a["heading"]))
         result["elapsed_time"] = elapsed
         return result
@@ -149,7 +152,8 @@ class Renderer:
                  f'Final fitness {self.replay.metrics["fitness"]:.4f}    Completed: {self.replay.metrics["completed"]}']
         for i, text in enumerate(lines):
             self.surface.blit(self.font.render(text, True, (232, 239, 242)), (24, 15 + i * 29))
-        help_text = "Saved samples; interpolated motion. Simplified kinematic physics."
+        model = self.replay.config["vehicle"].get("model", "kinematic")
+        help_text = f"Saved samples; interpolated motion. Simplified {model} bicycle physics."
         if not static:
             help_text += f"  {playback_speed:g}x | Space: pause | arrows: seek | R: restart | Esc: quit"
         self.surface.blit(self.small_font.render(help_text, True, (186, 199, 205)), (24, self.surface.get_height() - 34))

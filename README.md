@@ -4,6 +4,70 @@ Separate Python scaffold for the pipeline **track → observations → NEAT driv
 → movement → fitness → evolution → replay**. Read [PLAN.md](PLAN.md) for the
 implementation checklist and exact modelling assumptions.
 
+## Dynamic tyres (current branch)
+
+`config.json` now selects `vehicle.model = "dynamic"`. Old saved configs without
+this key continue to select the kinematic model. The 16-input / 3-action driver
+interface, fixed car dimensions, track and fitness remain the same. Dynamic
+states add body lateral velocity and yaw rate; total `speed` remains the
+magnitude of body velocity. Observations read these integrated velocities.
+All trajectory artifacts now retain the extra dynamic state fields.
+
+Implemented force model (left-positive conventions):
+
+```text
+alpha_front = steering - atan2(vy + lf * yaw_rate, vx)
+alpha_rear  = -atan2(vy - lr * yaw_rate, vx)
+Fz_front = mass * g * lr / wheelbase
+Fz_rear  = mass * g * lf / wheelbase
+Fy_axle = clip(cornering_stiffness * alpha, -mu * Fz, mu * Fz)
+abs(Fx_axle) <= sqrt((mu * Fz)^2 - Fy_axle^2)
+```
+
+Mass and yaw inertia now enter the longitudinal, lateral and yaw equations.
+Front forces rotate through the wheel steering angle into body coordinates.
+The model structure follows the [MathWorks dynamic bicycle equations](https://www.mathworks.com/help/ident/ug/modeling-a-vehicle-dynamics-system.html).
+Tyre forces are axle totals, not individual wheel forces. The friction-circle
+allocator gives lateral force priority and limits the requested drive/brake
+force to the remaining grip. Drive/braking are distributed by static axle load;
+this is a simple all-wheel force allocation assumption. Brakes cannot launch
+the car from rest. Body-forward velocity is constrained nonnegative.
+
+Prototype parameters: yaw inertia 1900 kg m², front/rear axle cornering stiffness
+55,000 / 60,000 N/rad, mu = 1.0, g = 9.81 m/s². These are demonstration settings,
+not calibrated F1 tyre data. Below 1 m/s the slip denominator is regularized,
+and lateral forces ramp from zero at rest. Physics is internally substepped
+at 0.001 s while preserving the 0.01 s environment update. The existing speed
+cap remains. This is a saturated linear tyre law, with no longitudinal slip,
+wheel rotation, load transfer, tyre temperatures, aerodynamic drag or downforce.
+
+Inspect current slip angles, axle loads and forces using
+`vehicle.tyre_forces(state, action, vehicle_config)`. Returned `TyreForces` values
+use radians and newtons. Use `model: "kinematic"` for comparison.
+
+### Measured increase in challenge
+
+The same 30 seeded initial networks completed three laps in 1/30 cases under
+each model. This does not demonstrate a general increase in learning difficulty.
+The unchanged 12 m/s baseline completed in 113.94 s with kinematics versus
+114.52 s with dynamics (+0.51%). Pushing the same controller harder exposed
+the grip limit:
+
+| Requested speed | Kinematic | Dynamic |
+| --- | --- | --- |
+| 12 m/s | Three laps, 113.94 s | Three laps, 114.52 s |
+| 18 m/s | Three laps, 77.22 s | Three laps, 78.33 s |
+| 22 m/s | Three laps, 64.09 s | Off-track after 312.82 m |
+| 26 m/s | Three laps, 55.16 s | Off-track after 301.11 m |
+
+The change mainly challenges speed optimization: networks must budget grip
+between steering and throttle/braking, and handle lateral/yaw response lag.
+A rough constant-radius estimate with mu=1 and R=40 m gives sqrt(mu*g*R)
+= 19.8 m/s; it is an approximation, not an enforced speed limit. Measurements
+are a single seed/controller comparison, not a statistical training study.
+Detailed settings, per-genome metrics, baseline recordings and the speed sweep
+are in `outputs/physics-comparison-20261017T103853822623Z/`.
+
 ## Current objective and generation rendering
 
 The current default is **three laps**, with a 360 s episode limit. Earlier
@@ -98,7 +162,8 @@ The baseline completed a physically driven lap in 39.00 simulated seconds.
 The first NEAT smoke run also produced a reloadable lap-completing champion
 from the initial population; this is not evidence of evolutionary improvement.
 
-The car uses a CG-centred footprint and a simplified kinematic bicycle model.
+The car uses a CG-centred footprint and a simplified dynamic bicycle model.
+The legacy kinematic model remains available for old recordings/comparisons.
 Settings are prototype assumptions, not official F1 specifications.
 
 ## Setup
