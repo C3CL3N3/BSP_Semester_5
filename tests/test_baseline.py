@@ -4,7 +4,12 @@ import json
 import unittest
 
 from baseline import run_baseline
-from environment import load_config
+from environment import ROOT, load_config as _load_config
+
+
+def load_config():
+    """Keep oval-specific regression checks independent of the active circuit."""
+    return _load_config(ROOT / "configs" / "oval.json")
 
 
 class BaselineTests(unittest.TestCase):

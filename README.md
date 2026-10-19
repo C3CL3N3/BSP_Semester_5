@@ -4,6 +4,108 @@ Separate Python scaffold for the pipeline **track → observations → NEAT driv
 → movement → fitness → evolution → replay**. Read [PLAN.md](PLAN.md) for the
 implementation checklist and exact modelling assumptions.
 
+## Current tracks, aero and replay display
+
+The active `config.json` now uses `tracks/technical.json`: a 3,030.46 m
+synthetic track, 12 m wide, with alternating left/right bends, tightening
+transitions, and longer straights. It has 122 ordered gates per lap and a
+1,200 s episode limit for three laps. The original oval remains available in
+`configs/oval.json`. Oval-specific regression tests use that explicit fixture.
+
+The supplied `monza.json` is supported as a separate closed-reference asset:
+5,760.15 m, 12 m wide and 58 gates, selected by `configs/monza.json`. **Monza is
+not active and has not been driven/trained in this change.** Its geometry,
+spawn and path queries were validated. Track lengths describe the supplied
+reference data, not a claim of official circuit accuracy.
+
+File-based tracks require schema_version 1, metre units, width_m and explicitly
+closed reference_points. They use a buffered polyline road and arc-length
+projection/tangents. Self-crossing centrelines and roads with merged loops are
+rejected. Assets use paths relative to the project directory. Environment and
+training snapshots embed the loaded points, so old runs don't depend on later
+changes to a source asset. The analytical oval implementation remains intact.
+
+Preview a track without activating it or running physics:
+
+```sh
+.venv/bin/python track.py --plot outputs/technical-preview-new.png
+.venv/bin/python track.py --config configs/monza.json --plot outputs/monza-preview-new.png
+```
+
+Verified previews: `outputs/technical-track.png`,
+`outputs/monza-track-preview.png`. Export filenames must be new.
+
+Dynamic physics now adds aerodynamic drag and downforce:
+
+```text
+drag = 0.5 * air_density * (Cd*A) * speed^2
+downforce = 0.5 * air_density * (Cl*A) * speed^2
+Fz_front += downforce * front_downforce_fraction
+Fz_rear  += downforce * (1 - front_downforce_fraction)
+```
+
+Drag opposes both components of body velocity. Downforce increases the normal
+loads used by each axle's existing friction circle; it does not propel the car.
+The quadratic laws follow NASA's [drag equation](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/drag-equation/)
+and [lift equation](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/lift-equation-2/).
+Current demonstration settings are air density 1.225 kg/m³, `drag_area_m2 = 1.1`
+(Cd*A), `downforce_area_m2 = 3.0` (positive downward Cl*A), and front downforce
+fraction 0.45. These are uncalibrated assumptions. Set either area to zero to
+disable that effect. Old configurations default to zero aero coefficients.
+No wind, ride-height effects, pitch or dynamic load transfer are simulated.
+The 80 m/s hard speed cap remains; drag can produce a lower terminal speed.
+
+Speed-coloured replay lines are thin again (1 px colour / 3 px outline).
+Replay/PNG displays show min/max speeds **after the first completed lap**, so
+standing-start acceleration is excluded. New metrics store
+`min_speed_after_first_lap_m_s` and `max_speed_after_first_lap_m_s`, measured at
+physics rate. Values are null until lap one finishes. During replay, extrema
+use available recorded samples up to playback time; the terminal frame uses
+exact saved extrema. Older recordings derive extrema from their stored samples.
+
+Validation: 64 tests pass. The baseline drove three real laps on the technical
+track with aero enabled: 763.54 s total, 366 gate crossings; post-lap-one min/max
+11.74 / 11.94 m/s. Recording:
+`outputs/baseline-20261017T141311024092Z.json`. Thin speed-coloured export:
+`outputs/technical-baseline-speed.png`.
+A 30-genome one-generation smoke run saved/reloaded its champion and periodic
+PNG under `outputs/training-20261017T141502757883Z/`. No initial network completed
+a lap; best validated progress was 826.39 m. Earlier oval results below are
+historical and not directly comparable to this new circuit/aero configuration.
+
+## Speed reward and speed-coloured trajectories
+
+Checkpoint `465bb09` saves the dynamic-physics project before these changes.
+The current objective adds an explicit speed bonus alongside progress,
+completion and mean-lap-time rewards:
+
+```text
+speed_bonus = speed_bonus_weight / target_distance
+              * sum(new_validated_progress * clip(forward_path_speed / reference_speed, 0, 1))
+fitness = progress_fraction + 2 * completed + time_bonus + speed_bonus
+```
+
+`fitness.speed_bonus_weight` defaults to 0.5 and `reference_speed_m_s` to 30.
+The bonus is available during incomplete runs, helping selection before a car
+can finish. It is bounded by 0.5 for a full target distance. Only new maximum
+validated progress is credited; stationary motion, reversing and re-driving
+previously credited sections cannot farm it. Collision/invalid moves earn no
+bonus. Completion still dominates: incomplete fitness stays below 1.5 while
+complete episodes score at least 3. Metrics expose `speed_bonus` separately.
+Set the weight to 0 to disable it. Old saved settings without this field keep
+their original objective. Earlier fitness measurements below are historical.
+
+Animated trails, static exports and periodic champion PNGs now colour each
+segment by speed: light yellow is slow, dark blue is fast, with a pale outline
+for contrast. The fixed legend range is `replay.speed_color_max_m_s` (default
+30 m/s); values above it share the darkest colour. This display scale is
+independent of the 80 m/s vehicle speed cap, and is fixed across generations.
+Overlapping lap traces show the most recently drawn lap segment.
+
+```sh
+.venv/bin/python replay.py outputs/training-20261017T104242234640Z --export outputs/my-speed-plot.png
+```
+
 ## Dynamic tyres (current branch)
 
 `config.json` now selects `vehicle.model = "dynamic"`. Old saved configs without
@@ -39,7 +141,7 @@ not calibrated F1 tyre data. Below 1 m/s the slip denominator is regularized,
 and lateral forces ramp from zero at rest. Physics is internally substepped
 at 0.001 s while preserving the 0.01 s environment update. The existing speed
 cap remains. This is a saturated linear tyre law, with no longitudinal slip,
-wheel rotation, load transfer, tyre temperatures, aerodynamic drag or downforce.
+wheel rotation, load transfer, tyre temperatures. Aerodynamic drag and downforce are now included as described above.
 
 Inspect current slip angles, axle loads and forces using
 `vehicle.tyre_forces(state, action, vehicle_config)`. Returned `TyreForces` values
@@ -228,7 +330,7 @@ non-finite inputs, and non-positive timesteps raise `ValueError`.
 four world-space corners for the track's containment check.
 
 Construct `Track(load_config()["track"])` once per environment. The current
-configuration produces a 451.33 m counterclockwise stadium oval, 12 m wide,
+original oval configuration produces a 451.33 m counterclockwise stadium oval, 12 m wide,
 with 32 gates. `start_state()` returns a fresh stationary pose on the lower
 straight. `path_pose(s)` returns `(x, y, heading)` at wrapped arc length;
 `path_heading(s)` supports future lookahead observations. `project(x, y)`
@@ -370,3 +472,40 @@ are `outputs/champion-trajectory.png` and `outputs/baseline-trajectory.png`.
 Tests cover artifact loading, invalid recordings, time/angle interpolation,
 PNG generation and display-free animation. An interactive desktop window has
 not been manually checked in this session.
+
+## Large exports for zooming
+
+Trajectory PNGs now render natively at 4400×3040 pixels, including periodic
+champion exports. Configure `replay.export_width_px` / `export_height_px`, or
+pass `--export-width 6000 --export-height 4000` to replay.py. This adds geometry
+detail rather than enlarging an existing bitmap; trajectory lines remain thin.
+Playback windows keep their normal size. Track previews are 6400×4800 PNGs;
+use a `.svg` output suffix for vector track previews with sharp unlimited zoom.
+New training runs save fitness plots at 4200×2400 plus vector `fitness.svg`.
+
+Generated examples: `outputs/technical-baseline-large.png`,
+`outputs/technical-track-large.png`, and `outputs/technical-track.svg`.
+Open these in an image/SVG viewer and zoom to inspect the line.
+
+## Save every new champion automatically
+
+`training.render_every_generations` accepts `"auto"` (now selected in config.json),
+a positive generation interval, or 0 to disable snapshots. CLI equivalent:
+
+```sh
+.venv/bin/python train.py --render-every auto --render-mode png
+```
+
+Auto mode immediately saves each **strict improvement in all-time fitness**,
+including multiple improvements within one generation. The first evaluated
+genome establishes the first champion. Ties, repeated elites and worse fitness
+do not create duplicate snapshots. Filenames include generation and genome ID,
+e.g. `champion_laps/generation-0005-genome-000123.png`. Full reloadable snapshots
+remain in the matching `generation_champions/` subfolder.
+
+Auto mode records evaluated trajectories so saving a champion doesn't require a
+second simulation. Completed champions are saved even if the budget subsequently
+ends part-way through a generation. `render_mode: "window"` also plays every
+new champion; PNG mode saves without opening windows. Numeric intervals preserve
+the original end-of-generation behaviour. This saves champions, not the complete
+population required to resume evolution.

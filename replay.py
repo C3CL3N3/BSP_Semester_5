@@ -17,6 +17,13 @@ from track import Track
 from vehicle import VehicleConfig, VehicleState, footprint_corners, wrap_to_pi
 
 
+def speed_color(speed, scale):
+    """Light yellow at zero to dark blue at the configured display speed."""
+    amount = max(0.0, min(speed / scale, 1.0))
+    slow, fast = (255, 241, 172), (12, 40, 90)
+    return tuple(round(a + amount * (b - a)) for a, b in zip(slow, fast))
+
+
 @dataclass
 class Replay:
     driver: str
@@ -102,6 +109,9 @@ class Renderer:
         self.replay = replay
         self.track = Track(replay.config["track"])
         self.vehicle = VehicleConfig(**replay.config["vehicle"])
+        self.color_scale = replay.config.get("replay", {}).get("speed_color_max_m_s", 30.0)
+        if not isinstance(self.color_scale, (int, float)) or not math.isfinite(self.color_scale) or self.color_scale <= 0:
+            raise ValueError("speed_color_max_m_s must be finite and positive.")
         self.surface = pygame.Surface(size)
         self.font = pygame.font.Font(None, 27)
         self.small_font = pygame.font.Font(None, 22)
@@ -128,12 +138,16 @@ class Renderer:
         pg = self.pg
         self.surface.blit(self.base, (0, 0))
         row = self.replay.sample(elapsed)
-        rows = self.replay.trajectory if static else self.replay.trajectory[:bisect_right(self.replay.times, elapsed)]
-        points = [self.point(r["x"], r["y"]) for r in rows]
+        rows = list(self.replay.trajectory if static else self.replay.trajectory[:bisect_right(self.replay.times, elapsed)])
         if not static:
-            points.append(self.point(row["x"], row["y"]))
+            rows.append(row)
+        points = [self.point(r["x"], r["y"]) for r in rows]
         if len(points) >= 2:
-            pg.draw.lines(self.surface, (56, 208, 193), False, points, 2)
+            pg.draw.lines(self.surface, (225, 230, 233), False, points, 3)
+            for index in range(1, len(points)):
+                speed = (rows[index - 1]["speed"] + rows[index]["speed"]) / 2
+                pg.draw.line(self.surface, speed_color(speed, self.color_scale),
+                             points[index - 1], points[index], 1)
         state = VehicleState(**{key: row[key] for key in ("x", "y", "heading", "speed", "steering_angle")})
         corners = [self.point(x, y) for x, y in footprint_corners(state, self.vehicle)]
         pg.draw.polygon(self.surface, (255, 190, 70), corners)
@@ -152,6 +166,25 @@ class Renderer:
                  f'Final fitness {self.replay.metrics["fitness"]:.4f}    Completed: {self.replay.metrics["completed"]}']
         for i, text in enumerate(lines):
             self.surface.blit(self.font.render(text, True, (232, 239, 242)), (24, 15 + i * 29))
+        extrema = [r["speed"] for r in self.replay.trajectory
+                   if r["elapsed_time"] <= elapsed and r["maximum_validated_progress"] >= self.track.length]
+        if extrema:
+            low, high = min(extrema), max(extrema)
+            if terminal:
+                saved_low = self.replay.metrics.get("min_speed_after_first_lap_m_s")
+                saved_high = self.replay.metrics.get("max_speed_after_first_lap_m_s")
+                low = low if saved_low is None else saved_low
+                high = high if saved_high is None else saved_high
+            text = f"After lap 1 | Min {low:.2f} m/s | Max {high:.2f} m/s"
+        else:
+            text = "After lap 1 | Min / Max: waiting for first lap"
+        self.surface.blit(self.small_font.render(text, True, (232, 239, 242)), (24, 133))
+        legend_y = self.surface.get_height() - 68
+        for index in range(180):
+            pg.draw.line(self.surface, speed_color(index / 179 * self.color_scale, self.color_scale),
+                         (24 + index, legend_y), (24 + index, legend_y + 12))
+        legend = f"0 to {self.color_scale:g} m/s | darker = faster (colours saturate above scale)"
+        self.surface.blit(self.small_font.render(legend, True, (232, 239, 242)), (218, legend_y - 1))
         model = self.replay.config["vehicle"].get("model", "kinematic")
         help_text = f"Saved samples; interpolated motion. Simplified {model} bicycle physics."
         if not static:
@@ -160,13 +193,19 @@ class Renderer:
         return self.surface
 
 
-def export_plot(replay, output):
-    """Save a static whole-lap trajectory without opening a display."""
+def export_plot(replay, output, *, width=None, height=None):
+    """Render native-resolution geometry for zoomable PNGs (not upscaled pixels)."""
     import pygame
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"Output already exists: {output}")
-    renderer = Renderer(replay)
+    settings = replay.config.get("replay", {})
+    width = settings.get("export_width_px", 4400) if width is None else width
+    height = settings.get("export_height_px", 3040) if height is None else height
+    for name, value, minimum in (("width", width, 640), ("height", height, 480)):
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= 8192:
+            raise ValueError(f"Export {name} must be an integer between {minimum} and 8192.")
+    renderer = Renderer(replay, size=(width, height))
     surface = renderer.draw(replay.duration, static=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     pygame.image.save(surface, str(output))
@@ -217,6 +256,8 @@ def main():
     parser.add_argument("source", type=Path, help="Baseline JSON, champion episode JSON, or training directory")
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--export", type=Path, help="Save static trajectory PNG instead of opening a window")
+    parser.add_argument("--export-width", type=int, help="PNG width in pixels (default 4400)")
+    parser.add_argument("--export-height", type=int, help="PNG height in pixels (default 3040)")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--frames", type=int, help="Stop after N animation frames (smoke checks)")
     args = parser.parse_args()
@@ -225,7 +266,7 @@ def main():
     try:
         replay = load_replay(args.source)
         if args.export:
-            export_plot(replay, args.export)
+            export_plot(replay, args.export, width=args.export_width, height=args.export_height)
             print(f"Saved trajectory plot: {args.export.resolve()}")
         else:
             play(replay, speed=args.speed, headless=args.headless, frames=args.frames)

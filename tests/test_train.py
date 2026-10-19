@@ -4,14 +4,21 @@ import json
 import math
 from pathlib import Path
 import random
+import re
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import neat
 
-from environment import ROOT, load_config
+from environment import ROOT, load_config as _load_config
 from train import (BudgetExpired, GenomeEvaluator, load_neat_config,
                    network_action, reload_champion, train)
+
+
+def load_config():
+    """Keep oval-specific regression checks independent of the active circuit."""
+    return _load_config(ROOT / "configs" / "oval.json")
 
 
 class TrainingTests(unittest.TestCase):
@@ -26,7 +33,7 @@ class TrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             cfg = root / "neat.cfg"
-            cfg.write_text((ROOT / "neat.cfg").read_text().replace("pop_size = 30", "pop_size = 4"))
+            cfg.write_text(re.sub(r"(?m)^pop_size\s*=.*$", "pop_size = 4", (ROOT / "neat.cfg").read_text()))
             config = load_config()
             config["simulation"]["max_episode_s"] = 0.1
             config["training"]["render_every_generations"] = 2
@@ -78,6 +85,39 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(result["stop_reason"], "wall_clock_budget")
             self.assertEqual(result["evaluated_genomes"], 0)
             self.assertIsNone(result["champion"])
+
+    def test_auto_saves_each_improvement_but_not_ties_or_regressions(self):
+        config = load_config()
+        config["training"]["render_every_generations"] = "auto"
+        evaluator = GenomeEvaluator(config, output_dir=Path("unused"))
+        cfg = load_neat_config(ROOT / "neat.cfg")
+        genomes = list(neat.Population(cfg).population.items())[:4]
+        episodes = [{"metrics": {"fitness": score}, "trajectory": []} for score in (1, 1, 0.5, 2)]
+        with patch("train.run_genome", side_effect=episodes) as run, patch.object(evaluator, "render_generation") as save:
+            evaluator(genomes, cfg)
+            self.assertEqual([call.args[0].fitness for call in save.call_args_list], [1, 2])
+            self.assertTrue(all(call.kwargs["record"] for call in run.call_args_list))
+        with patch("train.run_genome", return_value={"metrics": {"fitness": 2}, "trajectory": []}), patch.object(evaluator, "render_generation") as save:
+            evaluator(genomes, cfg)
+            save.assert_not_called()
+
+    def test_auto_snapshot_is_saved_even_after_evaluation_budget_expires(self):
+        config = load_config()
+        config["training"]["render_every_generations"] = "auto"
+        config["simulation"]["max_episode_s"] = 0.05
+        cfg = load_neat_config(ROOT / "neat.cfg")
+        genome = next(iter(neat.Population(cfg).population.values()))
+        from train import run_genome
+        episode = run_genome(genome, cfg, config, record=True)
+        genome.fitness = episode["metrics"]["fitness"]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "neat.cfg").write_text((ROOT / "neat.cfg").read_text())
+            evaluator = GenomeEvaluator(config, deadline=-1, output_dir=root)
+            evaluator.render_generation(genome, cfg, 0, recorded_episode=episode)
+            name = f"generation-0001-genome-{genome.key:06d}"
+            self.assertTrue((root / "champion_laps" / f"{name}.png").is_file())
+            self.assertEqual(reload_champion(root / "generation_champions" / name)["metrics"], episode["metrics"])
 
 
 if __name__ == "__main__":

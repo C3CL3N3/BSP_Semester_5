@@ -23,3 +23,9 @@ Replay tests require pygame-ce.
 reduced longitudinal force under cornering load, transient steering symmetry,
 stationary steering/braking, lateral-force direction, deterministic integration
 and timestep convergence. Legacy kinematic checks remain in test_vehicle.py.
+
+`test_aerodynamics.py` checks quadratic drag/downforce, coasting drag, zero-speed
+behaviour and increased axle load/grip. `test_track_assets.py` validates technical
+and optional Monza assets, projection, containment, ordered gates, reachable
+progress and self-contained snapshots. Oval regression tests explicitly use
+configs/oval.json so changing the active track does not invalidate them.

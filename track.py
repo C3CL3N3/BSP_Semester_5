@@ -7,6 +7,10 @@ are analytic. Collision/ray geometry uses circular arcs approximated by
 
 from dataclasses import dataclass
 import math
+import json
+from pathlib import Path
+
+import numpy as np
 
 from shapely.geometry import LineString, Point, Polygon
 from shapely.prepared import prep
@@ -33,6 +37,9 @@ class PathProjection:
 class Track:
     def __init__(self, config: dict):
         self.config = dict(config)
+        if config.get("shape") in ("file", "polyline"):
+            self._init_polyline(config)
+            return
         if config.get("shape") != "oval":
             raise ValueError("Only the oval track is supported.")
         for key in ("width_m", "straight_length_m", "turn_radius_m"):
@@ -57,10 +64,68 @@ class Track:
         self._prepared_road = prep(self.road)
         self.checkpoint_spacing = self.length / count
         self.checkpoints = tuple(self._gate(i * self.checkpoint_spacing) for i in range(count))
+        self.progress_distance_factor = self.radius / (self.radius - self.width / 2)
+
+    def _init_polyline(self, config):
+        data = dict(config)
+        if "reference_points" not in data:
+            path = Path(data["path"])
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parent / path
+            with path.open(encoding="utf-8") as handle:
+                asset = json.load(handle)
+            if asset.get("schema_version") != 1 or asset.get("units") != "m":
+                raise ValueError("Track asset requires schema_version 1 and metre units.")
+            data = {**asset, **data}
+        points = np.asarray(data["reference_points"], dtype=float)
+        if points.ndim != 2 or points.shape[1] != 2 or len(points) < 5 or not np.isfinite(points).all():
+            raise ValueError("Track requires at least four finite 2D points and closure.")
+        if not np.allclose(points[0], points[-1], rtol=0, atol=1e-6):
+            raise ValueError("Reference path must be explicitly closed.")
+        points[-1] = points[0]
+        self._segment_start = points[:-1]
+        self._segment_vector = np.diff(points, axis=0)
+        self._segment_length = np.linalg.norm(self._segment_vector, axis=1)
+        if np.any(self._segment_length < 1e-6):
+            raise ValueError("Reference path has repeated consecutive points.")
+        self._arc = np.concatenate(([0.0], np.cumsum(self._segment_length)))
+        self.length = float(self._arc[-1])
+        self._line = LineString(points)
+        if not self._line.is_simple:
+            raise ValueError("Reference path must not cross itself.")
+        self.width = data["width_m"]
+        _number("width_m", self.width, positive=True)
+        self.boundary_contact_allowed = data.get("boundary_contact_allowed", True)
+        if not isinstance(self.boundary_contact_allowed, bool):
+            raise ValueError("boundary_contact_allowed must be boolean.")
+        self.road = self._line.buffer(self.width / 2, quad_segs=16)
+        if self.road.geom_type != "Polygon" or len(self.road.interiors) != 1:
+            raise ValueError("Road must form a single closed loop without merged sections.")
+        self.boundary = self.road.boundary
+        self._prepared_road = prep(self.road)
+        spacing = data.get("checkpoint_spacing_m", 25.0)
+        _number("checkpoint_spacing_m", spacing, positive=True)
+        count = data.get("checkpoint_count", max(4, math.ceil(self.length / spacing)))
+        if isinstance(count, bool) or not isinstance(count, int) or count < 4:
+            raise ValueError("checkpoint_count must be an integer >= 4.")
+        self.checkpoint_spacing = self.length / count
+        self.checkpoints = tuple(self._gate(i * self.checkpoint_spacing) for i in range(count))
+        # Conservative allowance for arc-length magnification on inner bends.
+        # Gate order and actual Euclidean reachability are independently checked.
+        self.progress_distance_factor = 4.0
+        self.config = {**data, "shape": "polyline", "reference_points": points.tolist(), "checkpoint_count": count}
+        self.config.pop("path", None)
 
     def path_pose(self, s: float) -> tuple[float, float, float]:
         """Return exact (x, y, tangent heading) at wrapped arc length."""
         _number("s", s)
+        if hasattr(self, "_arc"):
+            s %= self.length
+            index = min(int(np.searchsorted(self._arc, s, side="right")) - 1, len(self._segment_length) - 1)
+            fraction = (s - self._arc[index]) / self._segment_length[index]
+            x, y = self._segment_start[index] + fraction * self._segment_vector[index]
+            dx, dy = self._segment_vector[index]
+            return float(x), float(y), math.atan2(dy, dx)
         # Start halfway along the bottom straight; parameter u starts at its left end.
         u = (s + self.straight_length / 2) % self.length
         d, r = self.straight_length, self.radius
@@ -83,6 +148,11 @@ class Track:
         """Nearest centreline point and signed lateral offset; s is in [0, length)."""
         _number("x", x)
         _number("y", y)
+        if hasattr(self, "_arc"):
+            s = float(self._line.project(Point(x, y))) % self.length
+            px, py, heading = self.path_pose(s)
+            offset = -(x - px) * math.sin(heading) + (y - py) * math.cos(heading)
+            return PathProjection(s, px, py, heading, offset)
         d, r = self.straight_length, self.radius
         candidates = []
         bottom_x = max(-d / 2, min(x, d / 2))
@@ -186,7 +256,7 @@ class ProgressTracker:
         delta = (projection.s - self._s + self.track.length / 2) % self.track.length - self.track.length / 2
         distance = math.hypot(current.x - self.previous.x, current.y - self.previous.y)
         # Arc-length motion may exceed CG motion on the inner edge of a turn.
-        arc_bound = max_distance_m * self.track.radius / (self.track.radius - self.track.width / 2)
+        arc_bound = max_distance_m * self.track.progress_distance_factor
         if distance > max_distance_m + 1e-8 or abs(delta) > arc_bound + 1e-8:
             raise ValueError("Unreachable progress change.")
         if self.completed:
@@ -206,3 +276,51 @@ class ProgressTracker:
         if self.completed:
             self.maximum_progress = self.target_distance
         return self.maximum_progress
+
+
+def save_track_plot(track: Track, output):
+    """Export a layout preview without changing the active simulation track."""
+    import os
+    cache = Path(__file__).resolve().parent / "outputs" / ".plot-cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(cache))
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache))
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    output = Path(output)
+    if output.exists():
+        raise FileExistsError(f"Output already exists: {output}")
+    fig, ax = plt.subplots(figsize=(16, 12))
+    x, y = track.road.exterior.xy
+    ax.fill(x, y, color="#65717b")
+    for hole in track.road.interiors:
+        ax.fill(*hole.xy, color="white")
+    points = np.array([track.path_pose(s)[:2] for s in np.linspace(0, track.length, 2500)])
+    ax.plot(points[:, 0], points[:, 1], color="#18242d", linewidth=0.6)
+    start = track.start_state()
+    ax.plot(start.x, start.y, "o", color="#d86a16", label="Start / finish")
+    ax.set(title=f'{track.config.get("name", "Oval")} | {track.length:.1f} m | {track.width:g} m wide',
+           xlabel="x (m)", ylabel="y (m)", aspect="equal")
+    ax.legend()
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=400)
+    plt.close(fig)
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Preview a configured track without running an episode.")
+    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent / "config.json")
+    parser.add_argument("--plot", type=Path, required=True)
+    args = parser.parse_args()
+    with args.config.open(encoding="utf-8") as handle:
+        config = json.load(handle)
+    track = Track(config["track"])
+    save_track_plot(track, args.plot)
+    print(f"Saved {track.length:.2f} m track preview: {args.plot.resolve()}")
+
+
+if __name__ == "__main__":
+    main()

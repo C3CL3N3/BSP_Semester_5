@@ -35,6 +35,7 @@ class Environment:
         self.config = deepcopy(config)
         self.vehicle_config = VehicleConfig(**self.config["vehicle"])
         self.track = Track(self.config["track"])
+        self.config["track"] = self.track.config
         self.simulation = self.config["simulation"]
         self.target_laps = self.simulation.get("target_laps", 1)
         if isinstance(self.target_laps, bool) or not isinstance(self.target_laps, int) or self.target_laps < 1:
@@ -46,6 +47,12 @@ class Environment:
             raise ValueError("time_bonus_weight must be finite and nonnegative.")
         self.reference_lap_time = fitness.get("reference_lap_time_s", 45.0)
         _positive("reference_lap_time_s", self.reference_lap_time)
+        self.speed_bonus_weight = fitness.get("speed_bonus_weight", 0.0)
+        if (isinstance(self.speed_bonus_weight, bool) or not isinstance(self.speed_bonus_weight, (int, float))
+                or not math.isfinite(self.speed_bonus_weight) or not 0 <= self.speed_bonus_weight <= 1):
+            raise ValueError("speed_bonus_weight must be finite and in [0, 1].")
+        self.reference_speed = fitness.get("reference_speed_m_s", self.vehicle_config.max_speed_m_s)
+        _positive("reference_speed_m_s", self.reference_speed)
         self.observation_config = self.config["observations"]
         for key in ("physics_dt_s", "controller_dt_s", "max_episode_s",
                     "stall_timeout_s", "stall_progress_m", "wrong_way_timeout_s"):
@@ -99,7 +106,10 @@ class Environment:
         self.termination_reason = None
         self._progress_anchor = 0.0
         self._last_progress_time = 0.0
+        self._speed_reward_distance = 0.0
         self._wrong_way_steps = 0
+        self.min_speed_after_lap = None
+        self.max_speed_after_lap = None
         self._ready = True
         self._last_observations = self.observations()
         return self._last_observations
@@ -138,9 +148,13 @@ class Environment:
         mean_lap_time = sum(self.lap_times) / len(self.lap_times) if self.lap_times else None
         time_bonus = (self.time_bonus_weight * self.reference_lap_time /
                       (self.reference_lap_time + mean_lap_time)) if completed else 0.0
+        speed_bonus = self.speed_bonus_weight * self._speed_reward_distance / self.target_distance
         return {
-            "fitness": progress / self.target_distance + 2 * int(completed) + time_bonus,
+            "fitness": progress / self.target_distance + 2 * int(completed) + time_bonus + speed_bonus,
+            "speed_bonus": speed_bonus,
             "time_bonus": time_bonus,
+            "min_speed_after_first_lap_m_s": self.min_speed_after_lap,
+            "max_speed_after_first_lap_m_s": self.max_speed_after_lap,
             "target_laps": self.target_laps,
             "laps_completed": len(self.lap_times),
             "lap_times": list(self.lap_times),
@@ -190,25 +204,34 @@ class Environment:
                 break
             self.state = next_state
             self.physics_steps += 1
+            # Include the lap-one finish sample, but exclude standing-start speeds.
+            after_first_lap = bool(self.lap_times)
             if not self.track.contains_vehicle(self.state, self.vehicle_config):
                 self._finish("off_track")
                 break
             try:
+                previous_progress = self.progress.maximum_progress
                 self.progress.update(self.state, self.vehicle_config.max_speed_m_s * self.dt)
             except ValueError:
                 self._finish("invalid_progress")
-                break
-            laps_completed = self.progress.gates_passed // len(self.track.checkpoints)
-            if laps_completed > len(self.lap_times):
-                self.lap_times.append(self.elapsed_time - self._last_lap_finish)
-                self._last_lap_finish = self.elapsed_time
-            if self.progress.completed:
-                self._finish("completed")
                 break
             path = self.track.project(self.state.x, self.state.y)
             vx, vy, _ = body_velocities(self.state, self.vehicle_config)
             error = self.state.heading - path.heading
             path_velocity = vx * math.cos(error) - vy * math.sin(error)
+            new_progress = self.progress.maximum_progress - previous_progress
+            self._speed_reward_distance += new_progress * max(0.0, min(path_velocity / self.reference_speed, 1.0))
+            laps_completed = self.progress.gates_passed // len(self.track.checkpoints)
+            if laps_completed > len(self.lap_times):
+                self.lap_times.append(self.elapsed_time - self._last_lap_finish)
+                self._last_lap_finish = self.elapsed_time
+            if after_first_lap or self.lap_times:
+                speed = self.state.speed
+                self.min_speed_after_lap = speed if self.min_speed_after_lap is None else min(self.min_speed_after_lap, speed)
+                self.max_speed_after_lap = speed if self.max_speed_after_lap is None else max(self.max_speed_after_lap, speed)
+            if self.progress.completed:
+                self._finish("completed")
+                break
             if path_velocity < self.simulation["wrong_way_velocity_m_s"]:
                 self._wrong_way_steps += 1
             else:

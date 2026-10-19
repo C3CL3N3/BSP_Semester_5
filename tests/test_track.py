@@ -13,7 +13,7 @@ from vehicle import VehicleConfig, VehicleState
 
 class TrackTests(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())["track"]
+        self.config = json.loads((Path(__file__).resolve().parents[1] / "configs" / "oval.json").read_text())["track"]
         self.track = Track(self.config)
         self.vehicle = VehicleConfig()
 

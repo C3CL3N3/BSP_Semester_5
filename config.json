@@ -20,12 +20,16 @@
     "friction_coefficient": 1.0,
     "gravity_m_s2": 9.81,
     "low_speed_regularization_m_s": 1.0,
-    "integration_dt_s": 0.001
+    "integration_dt_s": 0.001,
+    "air_density_kg_m3": 1.225,
+    "drag_area_m2": 1.1,
+    "downforce_area_m2": 3.0,
+    "front_downforce_fraction": 0.45
   },
   "simulation": {
     "physics_dt_s": 0.01,
     "controller_dt_s": 0.05,
-    "max_episode_s": 360.0,
+    "max_episode_s": 1200.0,
     "stall_timeout_s": 5.0,
     "stall_progress_m": 1.0,
     "wrong_way_timeout_s": 1.0,
@@ -33,11 +37,8 @@
     "target_laps": 3
   },
   "track": {
-    "shape": "oval",
-    "width_m": 12.0,
-    "straight_length_m": 100.0,
-    "turn_radius_m": 40.0,
-    "checkpoint_count": 32,
+    "shape": "file",
+    "path": "tracks/technical.json",
     "boundary_contact_allowed": true
   },
   "observations": {
@@ -63,15 +64,22 @@
     ]
   },
   "training": {
-    "generations": 50,
-    "wall_clock_budget_s": 1800.0,
+    "generations": 500,
+    "wall_clock_budget_s": 7200.0,
     "output_dir": "outputs",
-    "render_every_generations": 5,
+    "render_every_generations": "auto",
     "render_mode": "png",
     "render_speed": 4.0
   },
   "fitness": {
     "time_bonus_weight": 1.0,
-    "reference_lap_time_s": 45.0
+    "reference_lap_time_s": 45.0,
+    "speed_bonus_weight": 0.5,
+    "reference_speed_m_s": 50.0
+  },
+  "replay": {
+    "speed_color_max_m_s": 30.0,
+    "export_width_px": 4400,
+    "export_height_px": 3040
   }
 }

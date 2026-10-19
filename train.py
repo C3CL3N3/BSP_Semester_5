@@ -70,8 +70,8 @@ class GenomeEvaluator:
         self.evaluations = []
         self.output_dir = Path(output_dir) if output_dir is not None else None
         self.render_every = config["training"].get("render_every_generations", 0)
-        if isinstance(self.render_every, bool) or not isinstance(self.render_every, int) or self.render_every < 0:
-            raise ValueError("render_every_generations must be a nonnegative integer.")
+        if self.render_every != "auto" and (isinstance(self.render_every, bool) or not isinstance(self.render_every, int) or self.render_every < 0):
+            raise ValueError("render_every_generations must be 'auto' or a nonnegative integer.")
         self.render_mode = config["training"].get("render_mode", "png")
         if self.render_mode not in ("png", "window"):
             raise ValueError("render_mode must be png or window.")
@@ -79,16 +79,23 @@ class GenomeEvaluator:
         if not math.isfinite(self.render_speed) or self.render_speed <= 0:
             raise ValueError("render_speed must be positive and finite.")
 
-    def render_generation(self, genome, neat_config, generation):
-        """Record/render this generation's best, numbered from 1."""
-        if self.output_dir is None or not self.render_every or (generation + 1) % self.render_every:
+    def render_generation(self, genome, neat_config, generation, recorded_episode=None):
+        """Save interval winners, or each strict global improvement in auto mode."""
+        auto = self.render_every == "auto"
+        if self.output_dir is None or not self.render_every or (not auto and (generation + 1) % self.render_every):
             return
-        try:
-            episode = run_genome(genome, neat_config, self.config, record=True, deadline=self.deadline)
-        except BudgetExpired:
-            return
+        if recorded_episode is not None:
+            episode = deepcopy(recorded_episode)
+        else:
+            try:
+                episode = run_genome(genome, neat_config, self.config, record=True, deadline=self.deadline)
+            except BudgetExpired:
+                return
         episode.update(config=self.config, generation=generation + 1, genome_id=genome.key)
-        folder = self.output_dir / "generation_champions" / f"generation-{generation + 1:04d}"
+        name = f"generation-{generation + 1:04d}"
+        if auto:
+            name += f"-genome-{genome.key:06d}"
+        folder = self.output_dir / "generation_champions" / name
         folder.mkdir(parents=True)
         _json(folder / "champion_episode.json", episode)
         _json(folder / "config.json", self.config)
@@ -102,7 +109,7 @@ class GenomeEvaluator:
         gallery = self.output_dir / "champion_laps"
         gallery.mkdir(exist_ok=True)
         from shutil import copyfile
-        png = gallery / f"generation-{generation + 1:04d}.png"
+        png = gallery / f"{name}.png"
         copyfile(folder / "trajectory.png", png)
         print(f"Saved generation {generation + 1} champion PNG: {png.resolve()}", flush=True)
         if self.render_mode == "window":
@@ -115,7 +122,8 @@ class GenomeEvaluator:
         generation_champion = None
         try:
             for genome_id, genome in genomes:
-                result = run_genome(genome, neat_config, self.config, deadline=self.deadline)
+                result = run_genome(genome, neat_config, self.config, deadline=self.deadline,
+                                    record=self.render_every == "auto" and self.output_dir is not None)
                 metrics = result["metrics"]
                 genome.fitness = metrics["fitness"]
                 results.append(genome.fitness)
@@ -125,6 +133,12 @@ class GenomeEvaluator:
                 if self.champion is None or genome.fitness > self.champion.fitness:
                     self.champion = deepcopy(genome)
                     self.champion_metrics = metrics
+                    if self.render_every == "auto":
+                        rng = random.getstate()
+                        try:
+                            self.render_generation(self.champion, neat_config, generation, recorded_episode=result)
+                        finally:
+                            random.setstate(rng)
         except BudgetExpired:
             interrupted = True
             raise
@@ -137,7 +151,7 @@ class GenomeEvaluator:
                 row = self.generations[-1]
                 print(f"Generation {generation}: {len(results)} evaluated, "
                       f"best={row['best_fitness']:.6f}, mean={row['mean_fitness']:.6f}", flush=True)
-                if not interrupted:
+                if not interrupted and self.render_every != "auto":
                     rng = random.getstate()
                     try:
                         self.render_generation(generation_champion, neat_config, generation)
@@ -175,13 +189,14 @@ def _plot(rows, output):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(14, 8))
     for field, label in (("best_fitness", "Best"), ("mean_fitness", "Mean")):
         ax.plot([r["generation"] for r in rows], [r[field] for r in rows], marker="o", label=label)
     ax.set(xlabel="Generation (0 = initial population)", ylabel="Fitness", title="Measured NEAT fitness")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(output)
+    fig.savefig(output, dpi=300)
+    fig.savefig(Path(output).with_suffix(".svg"))
     plt.close(fig)
 
 
@@ -200,7 +215,9 @@ def train(config, neat_path, output_dir, *, generations=None, budget_s=None):
     if isinstance(budget_s, bool) or not math.isfinite(budget_s) or budget_s <= 0:
         raise ValueError("budget_s must be finite and positive.")
     # Validate environment and seed before creating output artifacts.
-    Environment(config).reset()
+    validation_env = Environment(config)
+    validation_env.reset()
+    config = validation_env.config  # Embed track geometry in every saved run.
     neat_text = Path(neat_path).read_text()
     neat_config = load_neat_config(neat_path)
     GenomeEvaluator(config)  # Validate rendering settings before creating files.
@@ -264,7 +281,8 @@ def main():
     parser.add_argument("--generations", type=int)
     parser.add_argument("--budget-seconds", type=float)
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--render-every", type=int, help="Render every N completed generations; 0 disables")
+    parser.add_argument("--render-every", type=lambda value: value if value == "auto" else int(value),
+                        help="'auto' saves each new all-time champion; N renders every N generations; 0 disables")
     parser.add_argument("--render-mode", choices=("png", "window"))
     parser.add_argument("--render-speed", type=float)
     parser.add_argument("--output", type=Path, help="New run folder; default: outputs/training-<timestamp>")

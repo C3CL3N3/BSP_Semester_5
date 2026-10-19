@@ -48,6 +48,10 @@ class VehicleConfig:
     gravity_m_s2: float = 9.81
     low_speed_regularization_m_s: float = 1.0
     integration_dt_s: float = 0.001
+    air_density_kg_m3: float = 1.225
+    drag_area_m2: float = 0.0
+    downforce_area_m2: float = 0.0
+    front_downforce_fraction: float = 0.45
 
     def __post_init__(self):
         if self.model not in ("kinematic", "dynamic"):
@@ -56,8 +60,10 @@ class VehicleConfig:
             if name == "model":
                 continue
             _finite(name, value)
-            if value < 0 or (name != "initial_speed_m_s" and value == 0):
+            if value < 0 or (name not in ("initial_speed_m_s", "drag_area_m2", "downforce_area_m2", "front_downforce_fraction") and value == 0):
                 raise ValueError(f"{name} must be positive (initial speed may be zero).")
+        if self.front_downforce_fraction > 1:
+            raise ValueError("front_downforce_fraction must lie in [0, 1].")
         if not math.isclose(self.lf_m + self.lr_m, self.wheelbase_m, abs_tol=1e-9):
             raise ValueError("lf_m + lr_m must equal wheelbase_m.")
         if self.max_steering_rad >= math.pi / 2:
@@ -199,9 +205,25 @@ class TyreForces:
     rear_longitudinal_force: float
 
 
+def aerodynamic_forces(speed: float, config: VehicleConfig | Mapping) -> tuple[float, float]:
+    """Return drag/downforce magnitudes in N; areas mean Cd*A and Cl*A.
+
+    No wind, pitch or ride-height model. Positive downforce increases tyre load.
+    """
+    cfg = _config(config)
+    _finite("speed", speed)
+    if speed < 0:
+        raise ValueError("speed must be nonnegative.")
+    pressure = 0.5 * cfg.air_density_kg_m3 * speed * speed
+    return pressure * cfg.drag_area_m2, pressure * cfg.downforce_area_m2
+
+
 def _tyre_forces(vx, vy, yaw, steering, command, cfg):
+    _, downforce = aerodynamic_forces(math.hypot(vx, vy), cfg)
     front_load = cfg.mass_kg * cfg.gravity_m_s2 * cfg.lr_m / cfg.wheelbase_m
     rear_load = cfg.mass_kg * cfg.gravity_m_s2 * cfg.lf_m / cfg.wheelbase_m
+    front_load += downforce * cfg.front_downforce_fraction
+    rear_load += downforce * (1 - cfg.front_downforce_fraction)
     front_vy, rear_vy = vy + cfg.lf_m * yaw, vy - cfg.lr_m * yaw
     # At low speed the slip law is regularized and its force ramps from zero.
     denominator = max(vx, cfg.low_speed_regularization_m_s)
@@ -255,8 +277,11 @@ def _advance_dynamic(state, command, cfg, dt):
         cosine, sine = math.cos(steering), math.sin(steering)
         front_x = forces.front_longitudinal_force * cosine - forces.front_lateral_force * sine
         front_y = forces.front_longitudinal_force * sine + forces.front_lateral_force * cosine
-        dvx = (front_x + forces.rear_longitudinal_force) / cfg.mass_kg + yaw * vy
-        dvy = (front_y + forces.rear_lateral_force) / cfg.mass_kg - yaw * vx
+        speed = math.hypot(vx, vy)
+        drag, _ = aerodynamic_forces(speed, cfg)
+        drag_x, drag_y = (drag * vx / speed, drag * vy / speed) if speed > 0 else (0.0, 0.0)
+        dvx = (front_x + forces.rear_longitudinal_force - drag_x) / cfg.mass_kg + yaw * vy
+        dvy = (front_y + forces.rear_lateral_force - drag_y) / cfg.mass_kg - yaw * vx
         dyaw = (cfg.lf_m * front_y - cfg.lr_m * forces.rear_lateral_force) / cfg.yaw_inertia_kg_m2
         vx, vy, yaw = max(0.0, vx + dvx * h), vy + dvy * h, yaw + dyaw * h
         speed = math.hypot(vx, vy)

@@ -1,5 +1,34 @@
 # One-day supervisor prototype
 
+## Current multi-track and aero update
+
+The active circuit is now the 3,030.46 m synthetic technical track in
+tracks/technical.json, 12 m wide with 122 gates/lap. Three-lap timeout is 1200 s.
+The original oval is preserved in configs/oval.json. The supplied monza.json
+loads through configs/monza.json (5,760.15 m, 58 gates), but is not active and
+was not trained/driven. Saved episodes embed reference geometry.
+
+Dynamic physics now includes quadratic drag opposing velocity and downforce
+increasing axle normal loads/grip. Parameters are prototype assumptions:
+rho 1.225 kg/m³, Cd*A 1.1 m², Cl*A 3.0 m², front downforce fraction 0.45.
+No wind, ride-height dependence or dynamic load transfer.
+
+Replay lines are thin again. Min/max speeds exclude lap one and are logged
+at physics rate, with replay/export display support. 64 tests pass. Baseline
+completed three technical-track laps in 763.54 s; post-first-lap speed extrema
+11.74 / 11.94 m/s. One-generation NEAT smoke run saved a reloadable champion
+but no initial network completed one lap. See README.md for paths/commands.
+This section supersedes the original oval-only, no-aero scope below.
+
+## Speed reward update
+
+Current fitness additionally rewards forward speed on newly validated progress:
+weight 0.5 times sum(delta new progress * clip(forward path speed / 30, 0, 1))
+divided by total target distance. This supersedes the formula below. Completion
+remains dominant. Recorded metrics expose the bonus. Replays/PNG trails use a
+fixed 0–30 m/s light-to-dark colour scale with a legend (darker = faster).
+Git checkpoint before the change: `465bb09`.
+
 ## Dynamic tyre update (current branch)
 
 The user authorized the first two dynamics additions, superseding the original

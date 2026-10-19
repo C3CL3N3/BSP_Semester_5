@@ -3,15 +3,27 @@
 from copy import deepcopy
 import json
 import math
+import struct
 from pathlib import Path
 import tempfile
 import unittest
 
-from environment import load_config
-from replay import Renderer, export_plot, load_replay, play
+from environment import ROOT, load_config as _load_config
+from replay import Renderer, export_plot, load_replay, play, speed_color
+
+
+def load_config():
+    """Keep oval-specific regression checks independent of the active circuit."""
+    return _load_config(ROOT / "configs" / "oval.json")
 
 
 class ReplayTests(unittest.TestCase):
+    def test_faster_colours_are_darker_on_a_fixed_scale(self):
+        colours = [speed_color(speed, 30) for speed in (0, 10, 20, 30)]
+        for a, b in zip(colours, colours[1:]):
+            self.assertTrue(all(x > y for x, y in zip(a, b)))
+        self.assertEqual(speed_color(80, 30), colours[-1])
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
@@ -74,6 +86,7 @@ class ReplayTests(unittest.TestCase):
         output = self.root / "trajectory.png"
         export_plot(replay, output)
         self.assertEqual(output.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(struct.unpack(">II", output.read_bytes()[16:24]), (4400, 3040))
         with self.assertRaises(FileExistsError):
             export_plot(replay, output)
         play(replay, headless=True, frames=3)

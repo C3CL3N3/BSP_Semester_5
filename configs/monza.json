@@ -1,0 +1,83 @@
+{
+  "seed": 42,
+  "vehicle": {
+    "mass_kg": 760.0,
+    "body_length_m": 5.2,
+    "body_width_m": 1.9,
+    "wheelbase_m": 3.4,
+    "lf_m": 1.55,
+    "lr_m": 1.85,
+    "max_steering_rad": 0.35,
+    "max_steering_rate_rad_s": 0.8,
+    "max_acceleration_m_s2": 4.0,
+    "max_braking_m_s2": 8.0,
+    "max_speed_m_s": 80.0,
+    "initial_speed_m_s": 0.0,
+    "model": "dynamic",
+    "yaw_inertia_kg_m2": 1900.0,
+    "front_cornering_stiffness_n_rad": 55000.0,
+    "rear_cornering_stiffness_n_rad": 60000.0,
+    "friction_coefficient": 1.0,
+    "gravity_m_s2": 9.81,
+    "low_speed_regularization_m_s": 1.0,
+    "integration_dt_s": 0.001,
+    "air_density_kg_m3": 1.225,
+    "drag_area_m2": 1.1,
+    "downforce_area_m2": 3.0,
+    "front_downforce_fraction": 0.45
+  },
+  "simulation": {
+    "physics_dt_s": 0.01,
+    "controller_dt_s": 0.05,
+    "max_episode_s": 2400.0,
+    "stall_timeout_s": 5.0,
+    "stall_progress_m": 1.0,
+    "wrong_way_timeout_s": 1.0,
+    "wrong_way_velocity_m_s": -1.0,
+    "target_laps": 3
+  },
+  "track": {
+    "shape": "file",
+    "path": "monza.json",
+    "boundary_contact_allowed": true
+  },
+  "observations": {
+    "longitudinal_speed_scale_m_s": 30.0,
+    "lateral_speed_scale_m_s": 10.0,
+    "yaw_rate_scale_rad_s": 4.0,
+    "lateral_offset_scale_m": 6.0,
+    "ray_angles_deg": [
+      -90,
+      -67.5,
+      -45,
+      -22.5,
+      0,
+      22.5,
+      45,
+      67.5,
+      90
+    ],
+    "ray_range_m": 150.0,
+    "lookahead_distances_m": [
+      30.0,
+      100.0
+    ]
+  },
+  "training": {
+    "generations": 50,
+    "wall_clock_budget_s": 1800.0,
+    "output_dir": "outputs",
+    "render_every_generations": 5,
+    "render_mode": "png",
+    "render_speed": 4.0
+  },
+  "fitness": {
+    "time_bonus_weight": 1.0,
+    "reference_lap_time_s": 45.0,
+    "speed_bonus_weight": 0.5,
+    "reference_speed_m_s": 30.0
+  },
+  "replay": {
+    "speed_color_max_m_s": 30.0
+  }
+}

@@ -4,8 +4,13 @@ import math
 import unittest
 from unittest.mock import patch
 
-from environment import Environment, load_config
+from environment import Environment, ROOT, load_config as _load_config
 from vehicle import Action, VehicleState, advance, body_velocities
+
+
+def load_config():
+    """Keep oval-specific regression checks independent of the active circuit."""
+    return _load_config(ROOT / "configs" / "oval.json")
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -27,6 +32,8 @@ class EnvironmentTests(unittest.TestCase):
         self.assertAlmostEqual(obs[15], (50 / 40) / math.pi)
         self.assertTrue(all(math.isfinite(x) and -1 <= x <= 1 for x in obs))
         self.assertEqual(env.seed, 42)
+        self.assertIsNone(env.metrics()["min_speed_after_first_lap_m_s"])
+        self.assertIsNone(env.metrics()["max_speed_after_first_lap_m_s"])
 
     def test_five_updates_match_vehicle(self):
         env = self.make_env()
@@ -160,7 +167,7 @@ class EnvironmentTests(unittest.TestCase):
                 if 0 < metrics["laps_completed"] < 3:
                     self.assertFalse(metrics["completed"])
                     self.assertEqual(metrics["time_bonus"], 0)
-                    self.assertLess(metrics["fitness"], 1)
+                    self.assertLess(metrics["fitness"], 1 + env.speed_bonus_weight)
         self.assertEqual(metrics["termination_reason"], "completed")
         self.assertTrue(metrics["completed"])
         self.assertGreater(metrics["fitness"], 3)
@@ -169,6 +176,8 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(len(metrics["lap_times"]), 3)
         self.assertAlmostEqual(metrics["lap_time"], metrics["elapsed_time"] / 3)
         self.assertEqual(metrics["gates_passed"], 96)
+        self.assertEqual(metrics["min_speed_after_first_lap_m_s"], 20)
+        self.assertEqual(metrics["max_speed_after_first_lap_m_s"], 20)
 
     def test_faster_completed_runs_score_higher(self):
         scores = []
@@ -194,6 +203,40 @@ class EnvironmentTests(unittest.TestCase):
         env.reset()
         self.assertEqual(env.target_laps, 1)
         self.assertEqual(env.time_bonus_weight, 0)
+        self.assertEqual(env.speed_bonus_weight, 0)
+
+    def test_speed_bonus_rewards_faster_new_progress(self):
+        results = []
+        for speed, decisions in ((5, 10), (10, 5)):
+            config = load_config()
+            config["vehicle"]["model"] = "kinematic"
+            env = Environment(config)
+            env.reset()
+            env.state.speed = speed
+            for _ in range(decisions):
+                env.step(Action(0, 0, 0))
+            results.append(env.metrics())
+        self.assertAlmostEqual(results[0]["maximum_validated_progress"], results[1]["maximum_validated_progress"])
+        self.assertAlmostEqual(results[1]["speed_bonus"], results[0]["speed_bonus"] * 2)
+        self.assertGreater(results[1]["fitness"], results[0]["fitness"])
+
+    def test_speed_bonus_cannot_be_farmed_by_repeating_a_section(self):
+        config = load_config()
+        config["vehicle"]["model"] = "kinematic"
+        env = Environment(config)
+        env.reset()
+        env.state.speed = 10
+        for _ in range(10):
+            env.step(Action(0, 0, 0))
+        original = env.metrics()["speed_bonus"]
+        for heading in (math.pi, 0):
+            env.state.heading = heading
+            for _ in range(10):
+                env.step(Action(0, 0, 0))
+        self.assertFalse(env.done)
+        self.assertAlmostEqual(env.metrics()["speed_bonus"], original)
+        env.reset()
+        self.assertEqual(env.metrics()["speed_bonus"], 0)
 
     def test_settings_are_validated(self):
         for changes in ({"physics_dt_s": 0}, {"controller_dt_s": 0.015},
