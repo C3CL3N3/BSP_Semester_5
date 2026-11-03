@@ -1,4 +1,4 @@
-"""Bounded headless NEAT training and reproducible champion reconstruction."""
+"""Train NEAT drivers with a time limit and save the best driver for replay."""
 
 import argparse
 from copy import deepcopy
@@ -157,11 +157,6 @@ class GenomeEvaluator:
                         self.render_generation(generation_champion, neat_config, generation)
                     finally:
                         random.setstate(rng)
-
-
-def evaluate_genomes(genomes, neat_config):
-    """Standard NEAT callback using the default project settings."""
-    GenomeEvaluator(load_config())(genomes, neat_config)
 
 
 def _json(path, value):

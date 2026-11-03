@@ -12,8 +12,6 @@ from track import ProgressTracker, Track
 from vehicle import Action, VehicleConfig, advance, body_velocities, wrap_to_pi
 
 ROOT = Path(__file__).resolve().parent
-OBSERVATION_COUNT = 16
-ACTION_COUNT = 3
 
 
 def load_config(path: str | Path = ROOT / "config.json") -> dict:
@@ -119,7 +117,7 @@ class Environment:
         return self.physics_steps * self.dt
 
     def observations(self) -> tuple[float, ...]:
-        """Exact PLAN.md input order; angles radians, rays relative to heading."""
+        """The 16 inputs listed in README; ray angles are relative to heading."""
         if not self._ready:
             raise RuntimeError("Call reset before reading observations.")
         cfg = self.observation_config

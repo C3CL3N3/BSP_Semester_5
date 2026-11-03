@@ -12,7 +12,6 @@ import math
 import os
 from pathlib import Path
 
-from environment import ROOT
 from track import Track
 from vehicle import VehicleConfig, VehicleState, footprint_corners, wrap_to_pi
 

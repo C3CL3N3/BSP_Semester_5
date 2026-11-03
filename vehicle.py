@@ -1,10 +1,10 @@
 """Fixed-car CG bicycle models (legacy kinematic and dynamic tyre forces); SI units throughout.
 
 The footprint is centred at the CG. Positive heading/steering turn left.
-These are prototype assumptions, not realistic F1 dynamics. See PLAN.md.
+These are prototype assumptions, not realistic F1 dynamics.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import math
 from typing import Mapping
 
@@ -89,7 +89,7 @@ class Action:
     brake: float
 
     def bounded(self) -> "Action":
-        for name, value in asdict(self).items():
+        for name, value in (("steering", self.steering), ("throttle", self.throttle), ("brake", self.brake)):
             _finite(name, value)
         return Action(_clip(self.steering, -1, 1),
                       _clip(self.throttle, 0, 1), _clip(self.brake, 0, 1))
@@ -113,8 +113,8 @@ class VehicleState:
 
 
 def _validate_state(state: VehicleState, config: VehicleConfig) -> None:
-    for name, value in asdict(state).items():
-        _finite(name, value)
+    for field in fields(state):
+        _finite(field.name, getattr(state, field.name))
     if not 0 <= state.speed <= config.max_speed_m_s:
         raise ValueError("State speed is outside vehicle limits.")
     if abs(state.lateral_speed) > state.speed + 1e-9:
