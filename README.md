@@ -1,8 +1,10 @@
 # NEAT driving prototype
 
-This project evolves a neural driver on a simulated track. NEAT changes the network between episodes. During an episode, the weights stay fixed and the network controls steering, throttle and braking.
+I use this prototype to study whether NEAT can evolve a driver on a simulated track. Each network controls steering, throttle and braking. Its weights stay fixed during an episode; evolution changes the network between episodes.
 
-The current version uses a synthetic technical track, a dynamic bicycle model and serial genome evaluation. It is a small learning experiment, not a calibrated racing simulator. See [CHANGES_SINCE_BASIC.md](CHANGES_SINCE_BASIC.md) for the comparison with the earlier oval version.
+I started with an oval and a kinematic bicycle model. This Mac version uses a longer technical track, dynamic tyre forces and aerodynamic loads. Genome evaluation remains serial. The model is still a simplified experiment with demonstration parameters.
+
+[CHANGES_SINCE_BASIC.md](CHANGES_SINCE_BASIC.md) explains the update in more detail, including the old and new fitness formulas and the reasons for adding a speed reward.
 
 ## Setup and first run
 
@@ -45,7 +47,7 @@ Inputs are normalised using `observations` in `config.json`. Rays have a 150 m r
 
 Three sigmoid outputs produce steering `2*y0 - 1`, throttle `y1` and brake `y2`. Braking reduces requested acceleration through `throttle * (1 - brake)`.
 
-`neat-python` implements speciation, reproduction and mutation. The project supplies the simulator, observations, fitness and evaluation loop. There is no gradient descent.
+I use `neat-python` for speciation, reproduction and mutation. The simulator, observations, fitness and evaluation loop connect that library to the driving task. There is no gradient descent.
 
 | Setting in `neat.cfg` | Current value |
 | --- | --- |
@@ -145,4 +147,4 @@ Trajectory colour runs from light yellow for slow segments to dark blue for fast
 | `configs/`, `tracks/`, `monza.json` | Alternative configs and required track assets |
 | `tests/` | Physics, geometry, environment, training and replay checks |
 
-The baseline targets 12 m/s and checks driveability. It is not an optimised racing controller. Comparing its time with an evolved driver does not establish superiority over a strong controller. A useful study still needs multiple seeds, equal evaluation budgets and tests on unseen tracks. Basic oval results cannot be compared directly with technical-track fitness: the geometry, physics and reward changed.
+I use the baseline at a target speed of 12 m/s to check that the track is driveable. It is a conservative controller, so beating its time does not establish superiority over an optimised controller. To study learning properly, I still need several seeds, equal evaluation budgets and tests on unseen tracks. The earlier oval scores are not directly comparable: the track, physics and fitness have changed.
