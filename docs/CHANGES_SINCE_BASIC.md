@@ -2,8 +2,6 @@
 
 In the basic version, I used a short oval and a kinematic bicycle model to check the full workflow: observations, driving, fitness, evolution and replay. This version keeps that workflow but adds tyre forces, aerodynamic loads and a longer track. I also changed the fitness so that faster driving can earn a reward before a network finishes all three laps.
 
-The comparison here is with `cleanup/basic-demo` (`8bd8e82`). The current Mac version comes from `feature/dynamic-tyre-physics` (`0c5f55c`). Evaluation is still serial. The Intel multiprocessing branch is separate.
-
 ## 1. Vehicle model
 
 The basic model calculated the direction of movement from speed and steering geometry. It had steering and acceleration limits, but no tyre grip limit. A network could therefore learn cornering behaviour that the model allowed even when a physical car would run out of grip.

@@ -12,13 +12,14 @@ from pathlib import Path
 import pickle
 import platform
 import random
-import statistics
+import re
 import time
 
 import neat
 
 from environment import Environment, ROOT, load_config
 from vehicle import Action
+from population_stats import summarise
 
 
 class BudgetExpired(Exception):
@@ -68,6 +69,8 @@ class GenomeEvaluator:
         self.champion_metrics = None
         self.generations = []
         self.evaluations = []
+        self.species_history = []
+        self.species_set = None
         self.output_dir = Path(output_dir) if output_dir is not None else None
         self.render_every = config["training"].get("render_every_generations", 0)
         if self.render_every != "auto" and (isinstance(self.render_every, bool) or not isinstance(self.render_every, int) or self.render_every < 0):
@@ -105,18 +108,14 @@ class GenomeEvaluator:
         from replay import export_plot, load_replay, play
         replay = load_replay(folder / "champion_episode.json")
         export_plot(replay, folder / "trajectory.png")
-        # A single gallery makes interval champions easy to browse/compare.
-        gallery = self.output_dir / "champion_laps"
-        gallery.mkdir(exist_ok=True)
-        from shutil import copyfile
-        png = gallery / f"{name}.png"
-        copyfile(folder / "trajectory.png", png)
-        print(f"Saved generation {generation + 1} champion PNG: {png.resolve()}", flush=True)
+        print(f"Saved generation {generation + 1} champion PNG: {(folder / 'trajectory.png').resolve()}", flush=True)
         if self.render_mode == "window":
             play(replay, speed=self.render_speed, close_on_finish=True)
 
     def __call__(self, genomes, neat_config):
+        genomes = list(genomes)
         generation = len(self.generations)
+        first_row = len(self.evaluations)
         results = []
         interrupted = False
         generation_champion = None
@@ -144,10 +143,15 @@ class GenomeEvaluator:
             raise
         finally:
             if results:
-                self.generations.append({"generation": generation, "evaluated": len(results),
-                                         "complete": not interrupted,
-                                         "best_fitness": max(results),
-                                         "mean_fitness": statistics.mean(results)})
+                row, species_rows = summarise(generation, genomes, self.evaluations[first_row:],
+                                               neat_config, self.species_set)
+                row["complete"] = row["complete"] and not interrupted
+                self.generations.append(row)
+                self.species_history.extend(species_rows)
+                if self.output_dir is not None:
+                    _json(self.output_dir / "evaluations.json", self.evaluations)
+                    _json(self.output_dir / "generation_metrics.json", self.generations)
+                    _json(self.output_dir / "species_history.json", self.species_history)
                 row = self.generations[-1]
                 print(f"Generation {generation}: {len(results)} evaluated, "
                       f"best={row['best_fitness']:.6f}, mean={row['mean_fitness']:.6f}", flush=True)
@@ -175,7 +179,7 @@ def reload_champion(run_dir):
     return run_genome(genome, neat_config, config, record=True)
 
 
-def _plot(rows, output):
+def _plot(rows, output, species_rows=()):
     # Keep plotting caches in the writable run area, including in sandboxes.
     cache = ROOT / "outputs" / ".plot-cache"
     cache.mkdir(parents=True, exist_ok=True)
@@ -184,14 +188,37 @@ def _plot(rows, output):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(14, 8))
-    for field, label in (("best_fitness", "Best"), ("mean_fitness", "Mean")):
-        ax.plot([r["generation"] for r in rows], [r[field] for r in rows], marker="o", label=label)
-    ax.set(xlabel="Generation (0 = initial population)", ylabel="Fitness", title="Measured NEAT fitness")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    x = [r["generation"] for r in rows]
+    ax = axes[0, 0]
+    for field, label in (("best_fitness", "Best"), ("mean_fitness", "Mean"), ("median_fitness", "Median")):
+        ax.plot(x, [r[field] for r in rows], label=label)
+    ax.fill_between(x, [r["fitness_q1"] for r in rows], [r["fitness_q3"] for r in rows], alpha=.2, label="Middle 50%")
+    ax.set(ylabel="Fitness", title="Evaluated fitness distribution")
     ax.legend()
+    ax = axes[0, 1]
+    ax.plot(x, [100*r["success_rate"] for r in rows], marker="o")
+    ax.set(ylabel="Completed target laps (%)", ylim=(-2, 102), title="Success among evaluated genomes")
+    ax = axes[1, 0]
+    ax.plot(x, [r["mean_hidden_nodes"] for r in rows], label="Hidden nodes")
+    ax.plot(x, [r["mean_enabled_connections"] for r in rows], label="Enabled connections")
+    ax.set(ylabel="Mean gene count", title="Network complexity (includes unused genes)")
+    ax.legend()
+    ax = axes[1, 1]
+    for sid in sorted({r["species_id"] for r in species_rows}):
+        by_generation = {r["generation"]: r["population_size"] for r in species_rows if r["species_id"] == sid}
+        ax.plot(x, [by_generation.get(g, 0) for g in x], label=str(sid))
+    ax.set(ylabel="Assigned genomes", title="Species sizes before reproduction")
+    if len({r["species_id"] for r in species_rows}) <= 12 and species_rows:
+        ax.legend(title="Species")
+    for ax in axes.flat:
+        ax.set_xlabel("Generation (0 = initial population)")
+        for row in rows:
+            if not row["complete"]:
+                ax.axvline(row["generation"], color="red", linestyle=":", alpha=.5)
+    fig.suptitle("Population study; red dotted lines mark partial generations")
     fig.tight_layout()
-    fig.savefig(output, dpi=300)
-    fig.savefig(Path(output).with_suffix(".svg"))
+    fig.savefig(output, dpi=200)
     plt.close(fig)
 
 
@@ -231,6 +258,7 @@ def train(config, neat_path, output_dir, *, generations=None, budget_s=None):
     try:
         random.seed(config["seed"])
         population = neat.Population(neat_config)
+        evaluator.species_set = population.species
         try:
             population.run(evaluator, generations)
             if not neat_config.no_fitness_termination and evaluator.champion and evaluator.champion.fitness >= neat_config.fitness_threshold:
@@ -242,6 +270,7 @@ def train(config, neat_path, output_dir, *, generations=None, budget_s=None):
     training_seconds = time.monotonic() - start
     _json(output_dir / "generation_metrics.json", evaluator.generations)
     _json(output_dir / "evaluations.json", evaluator.evaluations)
+    _json(output_dir / "species_history.json", evaluator.species_history)
     summary = {"stop_reason": stop_reason, "training_wall_seconds": training_seconds,
                "evaluated_genomes": len(evaluator.evaluations),
                "completed_generations": sum(r["complete"] for r in evaluator.generations),
@@ -255,7 +284,8 @@ def train(config, neat_path, output_dir, *, generations=None, budget_s=None):
         _json(output_dir / "champion_episode.json", replay)
         from baseline import run_baseline
         baseline = run_baseline(config)
-        _json(output_dir / "baseline_episode.json", baseline)
+        if config["training"].get("save_baseline_trajectory", False):
+            _json(output_dir / "baseline_episode.json", baseline)
         champion = evaluator.champion
         summary["champion"] = {**replay["metrics"], "genome_id": champion.key,
                                "hidden_nodes": len(set(champion.nodes) - set(neat_config.genome_config.output_keys)),
@@ -264,9 +294,20 @@ def train(config, neat_path, output_dir, *, generations=None, budget_s=None):
         summary["baseline"] = baseline["metrics"]
         summary["initial_population"] = evaluator.generations[0]
     if evaluator.generations:
-        _plot(evaluator.generations, output_dir / "fitness.png")
+        _plot(evaluator.generations, output_dir / "population.png", evaluator.species_history)
     _json(output_dir / "summary.json", summary)
     return summary
+
+
+def run_name(config, label=None, now=None):
+    """Human-readable labels with a UTC timestamp to distinguish repeated seeds."""
+    track = config["track"]
+    track_name = Path(track["path"]).stem if "path" in track else track.get("shape", "track")
+    parts = [label, track_name, config["vehicle"].get("model", "kinematic"), f"s{config['seed']}"]
+    slug = "-".join(re.sub(r"[^a-z0-9]+", "-", str(p).lower()).strip("-")[:48]
+                    for p in parts if p)
+    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return f"{slug}-{stamp:%Y%m%d-%H%M%S-%fZ}"
 
 
 def main():
@@ -280,7 +321,9 @@ def main():
                         help="'auto' saves each new all-time champion; N renders every N generations; 0 disables")
     parser.add_argument("--render-mode", choices=("png", "window"))
     parser.add_argument("--render-speed", type=float)
-    parser.add_argument("--output", type=Path, help="New run folder; default: outputs/training-<timestamp>")
+    parser.add_argument("--name", help="Optional experiment label for the default run folder")
+    parser.add_argument("--output", type=Path, help="Exact new run folder; otherwise track-model-seed-UTC timestamp")
+    parser.add_argument("--save-baseline-trajectory", action="store_true", help="Also save the baseline replay (metrics are always kept)")
     parser.add_argument("--reload", type=Path, help="Reload a trusted local run instead of training.")
     args = parser.parse_args()
     if args.reload:
@@ -293,7 +336,9 @@ def main():
                        ("render_mode", args.render_mode), ("render_speed", args.render_speed)):
         if value is not None:
             config["training"][key] = value
-    output = args.output or ROOT / config["training"]["output_dir"] / f"training-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}"
+    if args.save_baseline_trajectory:
+        config["training"]["save_baseline_trajectory"] = True
+    output = args.output or ROOT / config["training"]["output_dir"] / run_name(config, args.name)
     summary = train(config, args.neat_config, output, generations=args.generations, budget_s=args.budget_seconds)
     print(json.dumps(summary, indent=2))
     print(f"Saved run: {output.resolve()}")

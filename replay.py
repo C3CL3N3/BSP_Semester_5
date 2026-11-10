@@ -133,7 +133,7 @@ class Renderer:
         return (round(self.origin[0] + (x - self.cx) * self.scale),
                 round(self.origin[1] - (y - self.cy) * self.scale))
 
-    def draw(self, elapsed, *, static=False, paused=False, playback_speed=1.0):
+    def draw(self, elapsed, *, static=False, paused=False, playback_speed=1.0, live=False):
         pg = self.pg
         self.surface.blit(self.base, (0, 0))
         row = self.replay.sample(elapsed)
@@ -157,12 +157,14 @@ class Renderer:
         target_distance = self.track.length * target_laps
         progress = row["maximum_validated_progress"] / target_distance
         laps = min(target_laps, int((row["maximum_validated_progress"] + 1e-8) / self.track.length))
-        terminal = elapsed >= self.replay.duration
+        terminal = (self.replay.metrics["termination_reason"] is not None) if live else elapsed >= self.replay.duration
         status = self.replay.metrics["termination_reason"] if terminal or static else ("paused" if paused else "playing")
-        lines = [self.replay.driver + (" — recorded trajectory" if static else " — recorded replay"),
+        if live:
+            status = self.replay.metrics["termination_reason"] or ("paused" if paused else "driving")
+        lines = [self.replay.driver + (" - live simulation" if live else (" — recorded trajectory" if static else " — recorded replay")),
                  f'Time {row["elapsed_time"]:.2f} / {self.replay.duration:.2f} s    Speed {row["speed"]:.2f} m/s ({row["speed"] * 3.6:.1f} km/h)',
                  f'Progress {progress:.1%} | Laps {laps}/{target_laps} | {row["maximum_validated_progress"]:.1f}/{target_distance:.1f} m | {status}',
-                 f'Final fitness {self.replay.metrics["fitness"]:.4f}    Completed: {self.replay.metrics["completed"]}']
+                 f'{"Current" if live else "Final"} fitness {self.replay.metrics["fitness"]:.4f}    Completed: {self.replay.metrics["completed"]}']
         for i, text in enumerate(lines):
             self.surface.blit(self.font.render(text, True, (232, 239, 242)), (24, 15 + i * 29))
         extrema = [r["speed"] for r in self.replay.trajectory
@@ -186,7 +188,9 @@ class Renderer:
         self.surface.blit(self.small_font.render(legend, True, (232, 239, 242)), (218, legend_y - 1))
         model = self.replay.config["vehicle"].get("model", "kinematic")
         help_text = f"Saved samples; interpolated motion. Simplified {model} bicycle physics."
-        if not static:
+        if live:
+            help_text = f"Live {model} simulation | {playback_speed:g}x target | Space: pause | Esc: stop"
+        elif not static:
             help_text += f"  {playback_speed:g}x | Space: pause | arrows: seek | R: restart | Esc: quit"
         self.surface.blit(self.small_font.render(help_text, True, (186, 199, 205)), (24, self.surface.get_height() - 34))
         return self.surface

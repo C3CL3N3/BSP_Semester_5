@@ -41,22 +41,36 @@ class TrainingTests(unittest.TestCase):
             rng = random.getstate()
             a = train(config, cfg, root / "a", generations=2, budget_s=30)
             self.assertEqual(random.getstate(), rng)
+            config["training"]["save_baseline_trajectory"] = True
             b = train(config, cfg, root / "b", generations=2, budget_s=30)
             self.assertEqual(a["evaluated_genomes"], 8)
             self.assertEqual(a["completed_generations"], 2)
             self.assertTrue(a["champion"]["reload_verified"])
-            for filename in ("generation_metrics.json", "evaluations.json", "champion_episode.json"):
+            for filename in ("generation_metrics.json", "evaluations.json", "species_history.json", "champion_episode.json"):
                 self.assertEqual(json.loads((root / "a" / filename).read_text()),
                                  json.loads((root / "b" / filename).read_text()))
             self.assertEqual(reload_champion(root / "a"),
                              json.loads((root / "a" / "champion_episode.json").read_text()))
-            self.assertTrue((root / "a" / "fitness.png").is_file())
+            self.assertTrue((root / "a" / "population.png").is_file())
+            rows = json.loads((root / "a" / "evaluations.json").read_text())
+            generations = json.loads((root / "a" / "generation_metrics.json").read_text())
+            species = json.loads((root / "a" / "species_history.json").read_text())
+            for generation in generations:
+                members = [r for r in rows if r["generation"] == generation["generation"]]
+                self.assertEqual(generation["success_count"], sum(r["completed"] for r in members))
+                self.assertEqual(generation["success_rate"], generation["success_count"] / len(members))
+                best = next(r for r in members if r["genome_id"] == generation["best_genome_id"])
+                self.assertEqual(best["distance_to_generation_best"], 0)
+                self.assertTrue(all(r["species_id"] is not None for r in members))
+                groups = [r for r in species if r["generation"] == generation["generation"]]
+                self.assertEqual(sum(r["population_size"] for r in groups), 4)
+                self.assertEqual(sum(r["evaluated"] for r in groups), 4)
+            self.assertFalse((root / "a" / "baseline_episode.json").exists())
+            self.assertTrue((root / "b" / "baseline_episode.json").is_file())
+            self.assertIn("baseline", a)
             snapshot = root / "a" / "generation_champions" / "generation-0002"
             self.assertTrue((snapshot / "trajectory.png").is_file())
-            gallery = root / "a" / "champion_laps"
-            self.assertEqual([p.name for p in gallery.iterdir()], ["generation-0002.png"])
-            self.assertEqual((gallery / "generation-0002.png").read_bytes(),
-                             (snapshot / "trajectory.png").read_bytes())
+            self.assertFalse((root / "a" / "champion_laps").exists())
             self.assertTrue((snapshot / "champion.pkl").is_file())
             self.assertFalse((snapshot.parent / "generation-0001").exists())
             from replay import load_replay
@@ -93,11 +107,11 @@ class TrainingTests(unittest.TestCase):
         cfg = load_neat_config(ROOT / "neat.cfg")
         genomes = list(neat.Population(cfg).population.items())[:4]
         episodes = [{"metrics": {"fitness": score}, "trajectory": []} for score in (1, 1, 0.5, 2)]
-        with patch("train.run_genome", side_effect=episodes) as run, patch.object(evaluator, "render_generation") as save:
+        with patch("train._json"), patch("train.run_genome", side_effect=episodes) as run, patch.object(evaluator, "render_generation") as save:
             evaluator(genomes, cfg)
             self.assertEqual([call.args[0].fitness for call in save.call_args_list], [1, 2])
             self.assertTrue(all(call.kwargs["record"] for call in run.call_args_list))
-        with patch("train.run_genome", return_value={"metrics": {"fitness": 2}, "trajectory": []}), patch.object(evaluator, "render_generation") as save:
+        with patch("train._json"), patch("train.run_genome", return_value={"metrics": {"fitness": 2}, "trajectory": []}), patch.object(evaluator, "render_generation") as save:
             evaluator(genomes, cfg)
             save.assert_not_called()
 
@@ -116,7 +130,7 @@ class TrainingTests(unittest.TestCase):
             evaluator = GenomeEvaluator(config, deadline=-1, output_dir=root)
             evaluator.render_generation(genome, cfg, 0, recorded_episode=episode)
             name = f"generation-0001-genome-{genome.key:06d}"
-            self.assertTrue((root / "champion_laps" / f"{name}.png").is_file())
+            self.assertTrue((root / "generation_champions" / name / "trajectory.png").is_file())
             self.assertEqual(reload_champion(root / "generation_champions" / name)["metrics"], episode["metrics"])
 
 

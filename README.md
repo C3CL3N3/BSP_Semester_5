@@ -4,7 +4,7 @@ I use this prototype to study whether NEAT can evolve a driver on a simulated tr
 
 I started with an oval and a kinematic bicycle model. This Mac version uses a longer technical track, dynamic tyre forces and aerodynamic loads. Genome evaluation remains serial. The model is still a simplified experiment with demonstration parameters.
 
-[CHANGES_SINCE_BASIC.md](CHANGES_SINCE_BASIC.md) explains the update in more detail, including the old and new fitness formulas and the reasons for adding a speed reward.
+[Change notes](docs/CHANGES_SINCE_BASIC.md) explains the update in more detail, including the old and new fitness formulas and the reasons for adding a speed reward.
 
 ## Setup and first run
 
@@ -20,7 +20,7 @@ python train.py --generations 2 --budget-seconds 120 --render-every 0
 
 On Debian/Ubuntu, you may need `python3-venv` to create the environment. For normal training, run `python train.py`. That uses the full limits below. The short command above is a smoke run, not enough training to establish learning performance.
 
-No previous training artifacts are included in the supervisor ZIP. New runs create timestamped folders inside `outputs/`.
+No previous training artifacts are included in the supervisor ZIP. New runs go inside `outputs/`, named by track, vehicle model, seed and UTC time, for example `technical-dynamic-s42-20261110-143205-123456Z`. Add `--name grip-study` to prefix an experiment label. `--output PATH` still selects an exact new folder. Existing runs are never renamed or overwritten.
 
 ```sh
 python baseline.py
@@ -51,7 +51,7 @@ I use `neat-python` for speciation, reproduction and mutation. The simulator, ob
 
 | Setting in `neat.cfg` | Current value |
 | --- | --- |
-| Population | 100 genomes |
+| Population | 50 genomes |
 | Initial network | 16 inputs, 3 outputs, no hidden nodes, all 48 direct connections |
 | Activation / aggregation | Sigmoid / sum |
 | Elite genomes copied | 2 per surviving species |
@@ -105,7 +105,7 @@ Drag opposes motion. Downforce increases available tyre load, with 45% applied a
 
 These are demonstration parameters. The tyre law is saturated linear, with no wheel rotation, longitudinal slip, load transfer, temperature or wear. The car is not calibrated against measurements. An 80 m/s cap does not mean the car can reach that speed or take every corner at it.
 
-`configs/oval.json` selects the original oval. `configs/monza.json` selects the supplied `monza.json` asset, which is not the active track. Asset lengths describe the supplied geometry, not official circuit accuracy. File tracks must have a simple closed reference path in metres. Saved run settings embed the loaded points.
+`configs/oval.json` selects the original oval. `configs/monza.json` selects the supplied `tracks/monza.json` asset, which is not the active track. Asset lengths describe the supplied geometry, not official circuit accuracy. File tracks must have a simple closed reference path in metres. Saved run settings embed the loaded points.
 
 ## Fitness and termination
 
@@ -129,7 +129,26 @@ This Mac version evaluates genomes serially in the main process. There is no wor
 
 `training.render_every_generations` accepts `"auto"`, a positive interval, or 0. Auto saves every strict improvement in all-time fitness, including multiple improvements in a generation. Numeric intervals save the best driver in that generation. PNG is the default; `window` also plays the recording.
 
-Run folders save exact settings, package versions, evaluation and generation records, champion genome/trajectory, baseline comparison and fitness plots. Champion snapshots go into `generation_champions/` and `champion_laps/`. A partial episode receives no fitness. Final artifact saving and reload checks happen after the training budget, so total command time can exceed it.
+Each run keeps a small set of records with a separate purpose:
+
+| Output | Why it is kept |
+| --- | --- |
+| `config.json`, `neat.cfg`, `versions.json` | Reproduce the environment, evolution settings and software versions |
+| `evaluations.json` | One row per evaluated genome: fitness components, completion, progress, timing, termination, topology counts, species ID and genetic distance to the generation best |
+| `generation_metrics.json` | Success counts/rates, one-lap count, fitness mean/median/std/quartiles, network size means and the generation best's nodes/enabled edges |
+| `species_history.json` | Species size, age, evaluated count, best/mean fitness and success count before reproduction |
+| `population.png` | Four panels: fitness and its middle 50%, completion rate, mean network size and species sizes |
+| `summary.json` | Stop reason, budget, champion reload verification and baseline metrics |
+| `champion.pkl`, `champion_episode.json` | Reload and replay the final best driver |
+| `generation_champions/` | Selected standalone snapshots, each with one trajectory PNG, genome, recording and settings |
+
+The duplicate `champion_laps/` PNG gallery and separate fitness PNG/SVG are no longer created. Baseline metrics stay in the summary; add `--save-baseline-trajectory` (or `training.save_baseline_trajectory: true`) if its replay is needed. Full population trajectories and pickle checkpoints are not saved. Selected snapshots repeat settings so that each folder remains independently replayable.
+
+Population JSON records are refreshed after each evaluated generation, including a partial generation. Success means completing all target laps. Its rate uses evaluated genomes as the denominator; compare it with the saved population size when a budget expires. Partial generations have `complete: false` and red dotted markers in the figure. An unfinished episode is excluded, rather than counted as a failure.
+
+Topology counts describe stored genes, including genes disconnected from outputs, not just the effective network used during activation. Only each generation's evaluated best has its node IDs and enabled edges saved; other genomes have counts. Genetic distance uses NEAT's configured compatibility metric against that generation's best, not the final all-time champion. It is not a measure of driving-line similarity. All comparisons use the population before reproduction. Species size includes unevaluated members in partial generations, while species fitness summaries use evaluated members only. Species age is the current generation minus its creation generation.
+
+Final artifact saving, population plotting and champion reload checks happen after the training budget, so total command time can exceed it. Completing several runs with different seeds and equal evaluation budgets is still needed for a population study.
 
 Trajectory colour runs from light yellow for slow segments to dark blue for fast segments. The display scale is 30 m/s, so faster values share the darkest colour. This does not limit physics. Min/max speed excludes the first lap. PNG exports default to 4400 × 3040 pixels.
 
@@ -141,10 +160,49 @@ Trajectory colour runs from light yellow for slow segments to dark blue for fast
 | `track.py` | Oval and file geometry, rays, path projection, gates and previews |
 | `environment.py` | Episode loop, observations, scoring and termination |
 | `baseline.py` | Conservative rule-based driver using the same inputs |
-| `train.py` | Serial NEAT evaluation, saving and champion reload |
+| `train.py` | Serial NEAT evaluation, naming, saving and champion reload |
+| `population_stats.py` | Evaluated-population and species summaries |
 | `replay.py` | Recorded playback and PNG export |
+| `transfer.py` | Evaluate a saved champion on another track, with an optional live view |
 | `config.json`, `neat.cfg` | Simulation/training settings and NEAT settings |
-| `configs/`, `tracks/`, `monza.json` | Alternative configs and required track assets |
+| `configs/`, `tracks/` | Alternative configs and required track assets |
 | `tests/` | Physics, geometry, environment, training and replay checks |
 
 I use the baseline at a target speed of 12 m/s to check that the track is driveable. It is a conservative controller, so beating its time does not establish superiority over an optimised controller. To study learning properly, I still need several seeds, equal evaluation budgets and tests on unseen tracks. The earlier oval scores are not directly comparable: the track, physics and fitness have changed.
+
+## Analyse completed runs
+
+The scripts in [analysis/](analysis/README.md) turn the JSON records into CSV tables and plots without changing the training folders:
+
+```sh
+python analysis/study.py outputs/<run-folder>
+python analysis/study.py outputs --output analysis/reports/comparison
+```
+
+Use a new output path for each report. The analysis guide explains the figures, missing fields in older runs and the limits of cross-run comparisons.
+
+## Repository layout
+
+```text
+prototype/
+├── README.md
+├── TODO.md
+├── requirements.txt
+├── config.json             # active simulation and training settings
+├── neat.cfg                # NEAT settings
+├── vehicle.py
+├── track.py
+├── environment.py
+├── baseline.py
+├── train.py
+├── population_stats.py
+├── replay.py
+├── transfer.py
+├── configs/                # alternative oval and Monza settings
+├── tracks/                 # technical and Monza geometry
+├── analysis/               # study script and recording reference
+├── tests/
+└── docs/                   # change notes, validation and GitHub setup
+```
+
+Training creates `outputs/`; analysis creates `analysis/reports/`. Both are ignored by Git, along with archives, environments and machine-specific files. Saved champions are therefore not included in a fresh clone. Run training first or obtain a trusted recording separately before trying replay or transfer.

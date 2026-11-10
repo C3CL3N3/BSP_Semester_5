@@ -38,7 +38,7 @@
   },
   "track": {
     "shape": "file",
-    "path": "monza.json",
+    "path": "tracks/monza.json",
     "boundary_contact_allowed": true
   },
   "observations": {
